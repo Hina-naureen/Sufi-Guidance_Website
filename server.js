@@ -688,11 +688,20 @@ app.post('/api/agent', async (req, res) => {
     for (let i = 0; i < 5; i++) {
 
       if (isOpenRouter) {
-        // ── OpenRouter: OpenAI-compatible format ────────────────────────────
+        // ── OpenRouter: minimal tokens (free tier) ──────────────────────────
+        const shortSystem = 'You are a helpful assistant for Sufi Guidance™ and NoorPath platform.';
+        const lastMsg = messages[messages.length - 1];
+        const trimmedContent = typeof lastMsg.content === 'string'
+          ? lastMsg.content.slice(0, 300)
+          : lastMsg.content;
+        const orMessages = [
+          { role: 'system', content: shortSystem },
+          { role: 'user', content: trimmedContent }
+        ];
         const payload = JSON.stringify({
           model: 'anthropic/claude-3.5-sonnet',
-          max_tokens: 500,
-          messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
+          max_tokens: 300,
+          messages: orMessages,
           tools: OR_TOOLS,
           tool_choice: 'auto'
         });
