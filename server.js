@@ -685,23 +685,19 @@ app.post('/api/agent', async (req, res) => {
   try {
     let messages = [...chatMessages];
 
+    // OR: separate session messages (trimmed, no full history)
+    const shortSystem = 'You are a helpful assistant for Sufi Guidance™ and NoorPath platform.';
+    const lastUserText = (chatMessages[chatMessages.length - 1]?.content || '').slice(0, 300);
+    let orSession = [{ role: 'user', content: lastUserText }];
+
     for (let i = 0; i < 5; i++) {
 
       if (isOpenRouter) {
-        // ── OpenRouter: minimal tokens (free tier) ──────────────────────────
-        const shortSystem = 'You are a helpful assistant for Sufi Guidance™ and NoorPath platform.';
-        const lastMsg = messages[messages.length - 1];
-        const trimmedContent = typeof lastMsg.content === 'string'
-          ? lastMsg.content.slice(0, 300)
-          : lastMsg.content;
-        const orMessages = [
-          { role: 'system', content: shortSystem },
-          { role: 'user', content: trimmedContent }
-        ];
+        // ── OpenRouter: minimal tokens, proper tool context ─────────────────
         const payload = JSON.stringify({
           model: 'anthropic/claude-3.5-sonnet',
           max_tokens: 300,
-          messages: orMessages,
+          messages: [{ role: 'system', content: shortSystem }, ...orSession],
           tools: OR_TOOLS,
           tool_choice: 'auto'
         });
@@ -722,10 +718,10 @@ app.post('/api/agent', async (req, res) => {
         if (choice.finish_reason === 'tool_calls') {
           const toolCalls = choice.message.tool_calls || [];
           console.log(`[agent] OR tools:`, toolCalls.map(t => t.function.name));
-          messages.push({ role: 'assistant', content: choice.message.content || null, tool_calls: toolCalls });
+          orSession.push({ role: 'assistant', content: choice.message.content || null, tool_calls: toolCalls });
           for (const tc of toolCalls) {
             const result = executeTool(tc.function.name, JSON.parse(tc.function.arguments));
-            messages.push({ role: 'tool', tool_call_id: tc.id, content: result });
+            orSession.push({ role: 'tool', tool_call_id: tc.id, content: result });
           }
           continue;
         }
