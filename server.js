@@ -5,7 +5,13 @@ const path    = require('path');
 const app     = express();
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname)));
+app.use(express.static(path.join(__dirname), {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.jfif')) {
+      res.setHeader('Content-Type', 'image/jpeg');
+    }
+  }
+}));
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
