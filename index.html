@@ -3690,7 +3690,7 @@
           <div class="chat-header">
             <div class="chat-avatar">✦</div>
             <div class="chat-header-info">
-              <div class="chat-header-name">NoorPath AI Tutor</div>
+              <div class="chat-header-name">Sufi Guidance AI Tutor</div>
               <div class="chat-header-status">Present — ready to guide you</div>
             </div>
             <div style="font-size:0.75rem; color:var(--text-dim); background:var(--teal-dim); padding:4px 10px; border-radius:6px; border:1px solid rgba(20,184,166,0.2);">EN / UR</div>
@@ -5144,10 +5144,10 @@
     try {
       // Send both messages (multi-turn) and prompt (legacy fallback)
       const lastUserMsg = chatHistory[chatHistory.length - 1].content;
-      const res = await fetch('/api/ask', {
+      const res = await fetch('/api/agent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: chatHistory, prompt: lastUserMsg })
+        body: JSON.stringify({ messages: chatHistory })
       });
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || 'API error');

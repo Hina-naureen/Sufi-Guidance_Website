@@ -1,8 +1,9 @@
 require('dotenv').config();
-const express = require('express');
-const https   = require('https');
-const path    = require('path');
-const app     = express();
+const express   = require('express');
+const https     = require('https');
+const path      = require('path');
+const Anthropic = require('@anthropic-ai/sdk').default;
+const app       = express();
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname), {
@@ -563,6 +564,162 @@ app.post('/api/ask', (req, res) => {
     apiReq.on('error', e => res.status(500).json({ error: e.message }));
     apiReq.write(payload);
     apiReq.end();
+  }
+});
+
+// ── AGENT: Tool definitions ──────────────────────────────────────────────────
+const AGENT_TOOLS = [
+  {
+    name: 'abjad_calculator',
+    description: 'Calculate the Abjad (Islamic numerological) value of any Arabic or Urdu word or phrase. Use this whenever the user asks about the numerical value, abjad, or adad of a word or name.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'The Arabic or Urdu text to calculate the Abjad value for' }
+      },
+      required: ['text']
+    }
+  },
+  {
+    name: 'get_pricing',
+    description: 'Get the exact consultation pricing for a specific country or region. Use this when the user asks about fees, costs, prices, or booking rates.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        region: { type: 'string', description: 'Country or region name, e.g. "UK", "USA", "Pakistan", "India", "Middle East"' }
+      },
+      required: ['region']
+    }
+  },
+  {
+    name: 'get_service_info',
+    description: 'Get detailed information about a specific NoorPath or Sufi Guidance service. Use this for questions about books, free clinic, AI tutor, Abjad calculator, or consultation types.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        service: { type: 'string', description: 'Service name, e.g. "free_clinic", "books", "lightning_call", "subscription", "ultra_fast_track"' }
+      },
+      required: ['service']
+    }
+  }
+];
+
+// ── AGENT: Tool execution ─────────────────────────────────────────────────────
+function executeTool(name, input) {
+  if (name === 'abjad_calculator') {
+    const ABJAD = {
+      'ا':1,'أ':1,'إ':1,'آ':1,'ب':2,'ج':3,'د':4,'ه':5,'ة':5,'و':6,'ز':7,'ح':8,'ط':9,
+      'ي':10,'ى':10,'ئ':10,'ك':20,'ل':30,'م':40,'ن':50,'س':60,'ع':70,'ف':80,'ص':90,
+      'ق':100,'ر':200,'ش':300,'ت':400,'ث':500,'خ':600,'ذ':700,'ض':800,'ظ':900,'غ':1000
+    };
+    const text = input.text || '';
+    let total = 0;
+    const breakdown = [];
+    for (const char of text) {
+      if (ABJAD[char]) {
+        total += ABJAD[char];
+        breakdown.push(`${char} = ${ABJAD[char]}`);
+      }
+    }
+    if (total === 0) return `No Abjad values found for "${text}". Please enter Arabic letters.`;
+    return `Abjad value of "${text}": ${total}\nBreakdown: ${breakdown.join(', ')}`;
+  }
+
+  if (name === 'get_pricing') {
+    const region = (input.region || '').toLowerCase();
+    const pricing = {
+      uk:          { standard:'GBP 125 (3 weeks)', ultra:'GBP 350 (7-10 days)', lightning:'GBP 800', subscription:'GBP 2,600', basri:'GBP 1,106', future:'GBP 440' },
+      europe:      { standard:'GBP 125 (3 weeks)', ultra:'GBP 350 (7-10 days)', lightning:'GBP 800', subscription:'GBP 2,600' },
+      usa:         { standard:'USD 170 (3 weeks)', ultra:'USD 404 (7-10 days)', lightning:'USD 1,070', subscription:'USD 3,500', basri:'USD 1,205', future:'USD 170' },
+      canada:      { standard:'CAD 260 (3 weeks)', ultra:'CAD 602 (7-10 days)', lightning:'CAD 1,520', subscription:'CAD 4,400', basri:'CAD 1,700' },
+      australia:   { standard:'AUD 260 (3 weeks)', ultra:'AUD 602 (7-10 days)', lightning:'AUD 1,610', subscription:'AUD 4,400', basri:'AUD 1,700' },
+      pakistan:    { standard:'RS. 17,000 (60 days)', ultra:'RS. 44,000 (20-25 days)', lightning:'RS. 350,000', subscription:'RS. 530,000', basri:'RS. 260,000' },
+      india:       { standard:'RS. 9,800 (60 days)', ultra:'RS. 19,700 (20-25 days)', lightning:'RS. 125,000', basri:'RS. 170,000' },
+      bangladesh:  { standard:'BDT 9,800 (60 days)', ultra:'BDT 19,700 (20-25 days)', lightning:'BDT 125,000', basri:'BDT 170,000' },
+      'middle east':{ standard:'DHS 395 (60 days)', ultra:'DHS 710 (20-25 days)', lightning:'DHS 3,500', subscription:'DHS 15,200' }
+    };
+    const match = Object.keys(pricing).find(k => region.includes(k));
+    if (!match) return `Pricing not found for "${input.region}". Available regions: UK, Europe, USA, Canada, Australia, Pakistan, India, Bangladesh, Middle East.`;
+    const p = pricing[match];
+    return `Pricing for ${match.toUpperCase()}:\n` + Object.entries(p).map(([k,v]) => `• ${k}: ${v}`).join('\n');
+  }
+
+  if (name === 'get_service_info') {
+    const s = (input.service || '').toLowerCase().replace(/[_\s]/g, '');
+    const services = {
+      freeclinic: 'Free Clinic: 44+ SG WhatsApp Support Groups, weekly calls, free for everyone. Est. 2-3 month wait for Lounge 44, then 25-30 days for Support Groups. Join via WhatsApp: +447909286400',
+      books: '6 Sacred Books by Akhtar Moeed Shah Al-Abidi:\n1. Mathematical Mysteries of Alphabets\n2. Yaseen Wird-e-Mubeen\n3. Jafr-e-Jamia (28 volumes)\n4. Jafr-e-Ahmar (14 volumes)\n5. Seerat-e-Muhammad (Urdu)\n6. Divine Prophecy Divine\nContact +447909286400 to obtain.',
+      abjadcalculator: 'Free Abjad Calculator on NoorPath — calculates numerical values of Arabic letters using the classical Abjad system. Available at noorpath.co.uk',
+      lighteningcall: 'Lightning Call: ~35 min emergency session with Shah Saab. Book via +44 7940 000 344 (VIP/Lightning Line only).',
+      lightningcall: 'Lightning Call: ~35 min emergency session with Shah Saab. Book via +44 7940 000 344 (VIP/Lightning Line only).',
+      subscription: '12 or 18-month personal subscription: priority update calls, personal access, monthly connection with Shah Saab. Book via +44 7909 286400.',
+      ultrafasttrack: 'Ultra-Fast Track: 7-10 day consultation wait (vs 3 weeks standard). Higher price. Book via +44 7909 286400.',
+      consultation: 'Standard Consultation: ~3 week wait. Book via +44 7909 286400. Make payments ONLY on verified prebook lines.',
+      aitutor: 'AI Tutor: Available 24/7 on NoorPath, answers questions in English & Urdu about Sufi knowledge, classical texts, and spiritual guidance.',
+    };
+    const match = Object.keys(services).find(k => s.includes(k) || k.includes(s));
+    if (!match) return `Service info not found for "${input.service}".`;
+    return services[match];
+  }
+
+  return 'Unknown tool.';
+}
+
+// ── /api/agent ────────────────────────────────────────────────────────────────
+app.post('/api/agent', async (req, res) => {
+  const { messages: chatMessages } = req.body;
+  if (!chatMessages || !chatMessages.length) return res.status(400).json({ error: 'No messages provided' });
+
+  const API_KEY = process.env.ANTHROPIC_API_KEY;
+  if (!API_KEY) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set' });
+  if (API_KEY.startsWith('sk-or-')) return res.status(400).json({ error: 'Agent requires Anthropic API key, not OpenRouter' });
+
+  const client = new Anthropic({ apiKey: API_KEY });
+
+  try {
+    let messages = [...chatMessages];
+
+    // Agentic loop — max 5 iterations
+    for (let i = 0; i < 5; i++) {
+      const response = await client.messages.create({
+        model: 'claude-opus-4-6',
+        max_tokens: 1024,
+        system: SYSTEM_PROMPT,
+        tools: AGENT_TOOLS,
+        messages
+      });
+
+      if (response.stop_reason === 'end_turn') {
+        const text = response.content.find(b => b.type === 'text')?.text || '';
+        return res.json({ text });
+      }
+
+      if (response.stop_reason === 'tool_use') {
+        // Append assistant turn
+        messages.push({ role: 'assistant', content: response.content });
+
+        // Execute all tool calls
+        const toolResults = response.content
+          .filter(b => b.type === 'tool_use')
+          .map(b => ({
+            type: 'tool_result',
+            tool_use_id: b.id,
+            content: executeTool(b.name, b.input)
+          }));
+
+        messages.push({ role: 'user', content: toolResults });
+        continue;
+      }
+
+      // Any other stop reason — return whatever text we have
+      const text = response.content.find(b => b.type === 'text')?.text || '';
+      return res.json({ text });
+    }
+
+    res.json({ text: 'I reached the maximum steps. Please try again.' });
+  } catch (err) {
+    console.error('Agent error:', err);
+    res.status(500).json({ error: err.message || 'Agent error' });
   }
 });
 
