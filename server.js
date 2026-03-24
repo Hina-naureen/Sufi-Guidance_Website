@@ -328,7 +328,7 @@ function callClaude(systemPrompt, userPrompt, maxTokens, res) {
   if (isOpenRouter) {
     const payload = JSON.stringify({
       model: 'anthropic/claude-3.5-sonnet',
-      max_tokens: maxTokens,
+      max_tokens: Math.min(maxTokens, 500),
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
@@ -691,7 +691,7 @@ app.post('/api/agent', async (req, res) => {
         // ── OpenRouter: OpenAI-compatible format ────────────────────────────
         const payload = JSON.stringify({
           model: 'anthropic/claude-3.5-sonnet',
-          max_tokens: 1024,
+          max_tokens: 500,
           messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
           tools: OR_TOOLS,
           tool_choice: 'auto'
