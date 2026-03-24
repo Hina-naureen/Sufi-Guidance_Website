@@ -327,7 +327,7 @@ function callClaude(systemPrompt, userPrompt, maxTokens, res) {
 
   if (isOpenRouter) {
     const payload = JSON.stringify({
-      model: 'anthropic/claude-3-5-sonnet-20240620',
+      model: 'anthropic/claude-3.5-sonnet',
       max_tokens: maxTokens,
       messages: [
         { role: 'system', content: systemPrompt },
@@ -364,7 +364,7 @@ function callClaude(systemPrompt, userPrompt, maxTokens, res) {
     req2.end();
   } else {
     const payload = JSON.stringify({
-      model: 'claude-3-5-sonnet-20240620',
+      model: 'claude-sonnet-4-6',
       max_tokens: maxTokens,
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }]
@@ -665,6 +665,33 @@ function executeTool(name, input) {
   return 'Unknown tool.';
 }
 
+// ── AGENT: HTTPS helper ───────────────────────────────────────────────────────
+function httpsPost(hostname, path, headers, payload) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(payload);
+    const req = https.request(
+      { hostname, path, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data), ...headers } },
+      (apiRes) => {
+        let body = '';
+        apiRes.on('data', c => body += c);
+        apiRes.on('end', () => {
+          try { resolve(JSON.parse(body)); }
+          catch (e) { reject(new Error('JSON parse failed. Raw: ' + body.slice(0, 200))); }
+        });
+      }
+    );
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+// OpenRouter tools format (OpenAI-compatible)
+const OR_TOOLS = AGENT_TOOLS.map(t => ({
+  type: 'function',
+  function: { name: t.name, description: t.description, parameters: t.input_schema }
+}));
+
 // ── /api/agent ────────────────────────────────────────────────────────────────
 app.post('/api/agent', async (req, res) => {
   const { messages: chatMessages } = req.body;
@@ -672,53 +699,91 @@ app.post('/api/agent', async (req, res) => {
 
   const API_KEY = process.env.ANTHROPIC_API_KEY;
   if (!API_KEY) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set' });
-  if (API_KEY.startsWith('sk-or-')) return res.status(400).json({ error: 'Agent requires Anthropic API key, not OpenRouter' });
 
-  const client = new Anthropic({ apiKey: API_KEY });
+  const isOpenRouter = API_KEY.startsWith('sk-or-');
+  console.log(`[agent] Request received. isOpenRouter=${isOpenRouter}`);
 
   try {
     let messages = [...chatMessages];
 
-    // Agentic loop — max 5 iterations
     for (let i = 0; i < 5; i++) {
-      const response = await client.messages.create({
-        model: 'claude-opus-4-6',
-        max_tokens: 1024,
-        system: SYSTEM_PROMPT,
-        tools: AGENT_TOOLS,
-        messages
-      });
+      let json;
 
-      if (response.stop_reason === 'end_turn') {
-        const text = response.content.find(b => b.type === 'text')?.text || '';
+      if (isOpenRouter) {
+        // ── OpenRouter (OpenAI-compatible tool format) ──────────────────────
+        json = await httpsPost('openrouter.ai', '/api/v1/chat/completions',
+          { 'Authorization': `Bearer ${API_KEY}`, 'HTTP-Referer': 'http://localhost:3000', 'X-Title': 'NoorPath' },
+          { model: 'anthropic/claude-3.5-sonnet', max_tokens: 1024, messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages], tools: OR_TOOLS, tool_choice: 'auto' }
+        );
+
+        if (json.error) {
+          console.error('[agent] OpenRouter error:', json.error);
+          return res.status(400).json({ error: json.error.message || JSON.stringify(json.error) });
+        }
+
+        const choice = json.choices?.[0];
+        if (!choice) return res.status(500).json({ error: 'No response from OpenRouter' });
+
+        if (choice.finish_reason === 'tool_calls') {
+          const toolCalls = choice.message.tool_calls || [];
+          console.log(`[agent] Tool calls:`, toolCalls.map(t => t.function.name));
+
+          messages.push({ role: 'assistant', content: choice.message.content || null, tool_calls: toolCalls });
+
+          for (const tc of toolCalls) {
+            const input = JSON.parse(tc.function.arguments);
+            const result = executeTool(tc.function.name, input);
+            console.log(`[agent] Tool ${tc.function.name} result:`, result.slice(0, 80));
+            messages.push({ role: 'tool', tool_call_id: tc.id, content: result });
+          }
+          continue;
+        }
+
+        const text = choice.message?.content || '';
+        console.log('[agent] Done. Returning response.');
+        return res.json({ text });
+
+      } else {
+        // ── Anthropic native API ────────────────────────────────────────────
+        json = await httpsPost('api.anthropic.com', '/v1/messages',
+          { 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
+          { model: 'claude-opus-4-6', max_tokens: 1024, system: SYSTEM_PROMPT, tools: AGENT_TOOLS, messages }
+        );
+
+        if (json.error) {
+          console.error('[agent] Anthropic error:', json.error);
+          return res.status(400).json({ error: json.error.message || JSON.stringify(json.error) });
+        }
+
+        if (json.stop_reason === 'end_turn') {
+          const text = json.content?.find(b => b.type === 'text')?.text || '';
+          console.log('[agent] Done. Returning response.');
+          return res.json({ text });
+        }
+
+        if (json.stop_reason === 'tool_use') {
+          const toolUses = json.content.filter(b => b.type === 'tool_use');
+          console.log(`[agent] Tool calls:`, toolUses.map(t => t.name));
+
+          messages.push({ role: 'assistant', content: json.content });
+
+          const toolResults = toolUses.map(b => {
+            const result = executeTool(b.name, b.input);
+            console.log(`[agent] Tool ${b.name} result:`, result.slice(0, 80));
+            return { type: 'tool_result', tool_use_id: b.id, content: result };
+          });
+          messages.push({ role: 'user', content: toolResults });
+          continue;
+        }
+
+        const text = json.content?.find(b => b.type === 'text')?.text || '';
         return res.json({ text });
       }
-
-      if (response.stop_reason === 'tool_use') {
-        // Append assistant turn
-        messages.push({ role: 'assistant', content: response.content });
-
-        // Execute all tool calls
-        const toolResults = response.content
-          .filter(b => b.type === 'tool_use')
-          .map(b => ({
-            type: 'tool_result',
-            tool_use_id: b.id,
-            content: executeTool(b.name, b.input)
-          }));
-
-        messages.push({ role: 'user', content: toolResults });
-        continue;
-      }
-
-      // Any other stop reason — return whatever text we have
-      const text = response.content.find(b => b.type === 'text')?.text || '';
-      return res.json({ text });
     }
 
-    res.json({ text: 'I reached the maximum steps. Please try again.' });
+    res.json({ text: 'I reached the maximum steps. Please try a simpler question.' });
   } catch (err) {
-    console.error('Agent error:', err);
+    console.error('[agent] Error:', err.message);
     res.status(500).json({ error: err.message || 'Agent error' });
   }
 });
