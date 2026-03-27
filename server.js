@@ -319,7 +319,7 @@ IMPORTANT GUIDELINES FOR YOUR RESPONSES
 - For NoorPath platform features (AI Tutor, Abjad Calculator, books, pricing plans), explain them clearly`;
 
 // ── SHARED: Call Claude (Anthropic direct or OpenRouter) ─────────────
-function callClaude(systemPrompt, userPrompt, maxTokens, res) {
+function callClaude(systemPrompt, userPrompt, maxTokens, res, _attempt = 0) {
   const API_KEY = process.env.ANTHROPIC_API_KEY;
   if (!API_KEY) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set' });
 
@@ -386,7 +386,13 @@ function callClaude(systemPrompt, userPrompt, maxTokens, res) {
       apiRes.on('end', () => {
         try {
           const json = JSON.parse(data);
-          if (json.error) return res.status(400).json({ error: json.error.message });
+          if (json.error) {
+            if (json.error.type === 'overloaded_error' && _attempt < 3) {
+              const delay = (_attempt + 1) * 2000;
+              return setTimeout(() => callClaude(systemPrompt, userPrompt, maxTokens, res, _attempt + 1), delay);
+            }
+            return res.status(400).json({ error: json.error.message });
+          }
           res.json({ text: json.content[0].text });
         } catch (e) { res.status(500).json({ error: 'Parse error', raw: data }); }
       });
@@ -479,92 +485,102 @@ app.post('/api/ask', (req, res) => {
   const API_KEY = process.env.ANTHROPIC_API_KEY;
   if (!API_KEY) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set' });
 
-  // Support multi-turn: if messages array provided use it, else single turn
-  const chatMessages = messages && messages.length
-    ? messages
-    : [{ role: 'user', content: prompt }];
+  function askWithRetry(attempt) {
 
-  // Detect OpenRouter key (sk-or-v1-...) vs Anthropic key (sk-ant-...)
-  const isOpenRouter = API_KEY.startsWith('sk-or-');
+    // Support multi-turn: if messages array provided use it, else single turn
+    const chatMessages = messages && messages.length
+      ? messages
+      : [{ role: 'user', content: prompt }];
 
-  if (isOpenRouter) {
-    // ── OpenRouter (OpenAI-compatible format) ────────────────────────
-    const orMessages = [
-      { role: 'system', content: SYSTEM_PROMPT },
-      ...chatMessages
-    ];
-    const payload = JSON.stringify({
-      model: 'anthropic/claude-3.5-haiku',
-      max_tokens: 512,
-      messages: orMessages
-    });
-    const options = {
-      hostname: 'openrouter.ai',
-      path: '/api/v1/chat/completions',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${API_KEY}`,
-        'HTTP-Referer': 'http://localhost:3000',
-        'X-Title': 'NoorPath',
-        'Content-Length': Buffer.byteLength(payload)
-      }
-    };
-    const apiReq = https.request(options, (apiRes) => {
-      let data = '';
-      apiRes.on('data', chunk => data += chunk);
-      apiRes.on('end', () => {
-        try {
-          const json = JSON.parse(data);
-          if (json.error) return res.status(400).json({ error: json.error.message || JSON.stringify(json.error) });
-          const text = json.choices?.[0]?.message?.content;
-          if (!text) return res.status(500).json({ error: 'Empty response', raw: data });
-          res.json({ text });
-        } catch (e) {
-          res.status(500).json({ error: 'Parse error', raw: data });
-        }
+    // Detect OpenRouter key (sk-or-v1-...) vs Anthropic key (sk-ant-...)
+    const isOpenRouter = API_KEY.startsWith('sk-or-');
+
+    if (isOpenRouter) {
+      // ── OpenRouter (OpenAI-compatible format) ────────────────────────
+      const orMessages = [
+        { role: 'system', content: SYSTEM_PROMPT },
+        ...chatMessages
+      ];
+      const payload = JSON.stringify({
+        model: 'anthropic/claude-3.5-haiku',
+        max_tokens: 512,
+        messages: orMessages
       });
-    });
-    apiReq.on('error', e => res.status(500).json({ error: e.message }));
-    apiReq.write(payload);
-    apiReq.end();
-
-  } else {
-    // ── Anthropic direct ────────────────────────────────────────────
-    const payload = JSON.stringify({
-      model: 'claude-opus-4-6',
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT,
-      messages: chatMessages
-    });
-    const options = {
-      hostname: 'api.anthropic.com',
-      path: '/v1/messages',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': API_KEY,
-        'anthropic-version': '2023-06-01',
-        'Content-Length': Buffer.byteLength(payload)
-      }
-    };
-    const apiReq = https.request(options, (apiRes) => {
-      let data = '';
-      apiRes.on('data', chunk => data += chunk);
-      apiRes.on('end', () => {
-        try {
-          const json = JSON.parse(data);
-          if (json.error) return res.status(400).json({ error: json.error.message });
-          res.json({ text: json.content[0].text });
-        } catch (e) {
-          res.status(500).json({ error: 'Parse error', raw: data });
+      const options = {
+        hostname: 'openrouter.ai',
+        path: '/api/v1/chat/completions',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${API_KEY}`,
+          'HTTP-Referer': 'http://localhost:3000',
+          'X-Title': 'NoorPath',
+          'Content-Length': Buffer.byteLength(payload)
         }
+      };
+      const apiReq = https.request(options, (apiRes) => {
+        let data = '';
+        apiRes.on('data', chunk => data += chunk);
+        apiRes.on('end', () => {
+          try {
+            const json = JSON.parse(data);
+            if (json.error) return res.status(400).json({ error: json.error.message || JSON.stringify(json.error) });
+            const text = json.choices?.[0]?.message?.content;
+            if (!text) return res.status(500).json({ error: 'Empty response', raw: data });
+            res.json({ text });
+          } catch (e) {
+            res.status(500).json({ error: 'Parse error', raw: data });
+          }
+        });
       });
-    });
-    apiReq.on('error', e => res.status(500).json({ error: e.message }));
-    apiReq.write(payload);
-    apiReq.end();
+      apiReq.on('error', e => res.status(500).json({ error: e.message }));
+      apiReq.write(payload);
+      apiReq.end();
+
+    } else {
+      // ── Anthropic direct ────────────────────────────────────────────
+      const payload = JSON.stringify({
+        model: 'claude-opus-4-6',
+        max_tokens: 1024,
+        system: SYSTEM_PROMPT,
+        messages: chatMessages
+      });
+      const options = {
+        hostname: 'api.anthropic.com',
+        path: '/v1/messages',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': API_KEY,
+          'anthropic-version': '2023-06-01',
+          'Content-Length': Buffer.byteLength(payload)
+        }
+      };
+      const apiReq = https.request(options, (apiRes) => {
+        let data = '';
+        apiRes.on('data', chunk => data += chunk);
+        apiRes.on('end', () => {
+          try {
+            const json = JSON.parse(data);
+            if (json.error) {
+              if (json.error.type === 'overloaded_error' && attempt < 3) {
+                const delay = (attempt + 1) * 2000;
+                return setTimeout(() => askWithRetry(attempt + 1), delay);
+              }
+              return res.status(400).json({ error: json.error.message });
+            }
+            res.json({ text: json.content[0].text });
+          } catch (e) {
+            res.status(500).json({ error: 'Parse error', raw: data });
+          }
+        });
+      });
+      apiReq.on('error', e => res.status(500).json({ error: e.message }));
+      apiReq.write(payload);
+      apiReq.end();
+    }
   }
+  askWithRetry(0);
 });
 
 // ── AGENT: Tool definitions ──────────────────────────────────────────────────
